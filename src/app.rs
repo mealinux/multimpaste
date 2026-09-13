@@ -1,15 +1,24 @@
 use crate::clipboard::Clip;
 use crate::config::{self, Config};
 use crate::services;
-use eframe::egui::{self, Color32, Key, Modifiers, RichText, ViewportCommand};
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, Key, Margin, Modifiers, RichText, Sense, Shadow,
+    Stroke, Vec2, ViewportCommand,
+};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{TrayIcon, TrayIconBuilder};
 
 /// Gap between hiding the picker and sending the paste keystroke, so the OS has
 /// time to hand focus back to the app the user was typing in.
 const FOCUS_RETURN_DELAY: std::time::Duration = std::time::Duration::from_millis(180);
+
+const PICKER_SIZE: Vec2 = Vec2::new(460.0, 400.0);
+const SETTINGS_SIZE: Vec2 = Vec2::new(460.0, 470.0);
+/// Room around the rounded panel for its drop shadow.
+const SHADOW_MARGIN: i8 = 14;
+const ROW_HEIGHT: f32 = 36.0;
 
 #[derive(PartialEq, Clone, Copy)]
 enum View {
@@ -44,7 +53,7 @@ pub struct MultiPaste {
 
 impl MultiPaste {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        apply_style(&cc.egui_ctx);
 
         let clip = Clip::start(config.history_size);
         let hotkeys = GlobalHotKeyManager::new().expect("global hotkey manager");
@@ -93,21 +102,26 @@ impl MultiPaste {
 
     fn show(&mut self, ctx: &egui::Context, view: View) {
         self.view = view;
-        self.entries = self.clip.entries();
-        self.selected = 0;
+        self.notice = None;
         self.visible = true;
-        if view == View::Settings {
-            self.draft = self.config.clone();
+        match view {
+            View::Picker => {
+                self.entries = self.clip.entries();
+                self.selected = 0;
+            }
+            View::Settings => self.draft = self.config.clone(),
         }
 
         let size = match view {
-            View::Picker => egui::vec2(460.0, 380.0),
-            View::Settings => egui::vec2(460.0, 420.0),
+            View::Picker => PICKER_SIZE,
+            View::Settings => SETTINGS_SIZE,
         };
-        ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+        let outer = size + Vec2::splat(f32::from(SHADOW_MARGIN) * 2.0);
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(outer));
         if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
-            let pos = ((monitor - size) * 0.5).to_pos2();
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(
+                ((monitor - outer) * 0.5).to_pos2(),
+            ));
         }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -150,6 +164,13 @@ impl MultiPaste {
             }
         }
 
+        while self.context_menu.try_recv().is_ok() {
+            self.show(ctx, View::Picker);
+        }
+
+        // Only the tray *menu* is handled. Raw tray clicks are deliberately ignored:
+        // a left click already opens the menu, and on macOS that click is delivered
+        // after the menu selection, which would undo whatever the user just chose.
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             let Some(menu) = &self.menu else { continue };
             if event.id == menu.quit {
@@ -158,18 +179,6 @@ impl MultiPaste {
                 self.show(ctx, View::Settings);
             } else if event.id == menu.open {
                 self.show(ctx, View::Picker);
-            }
-        }
-
-        while self.context_menu.try_recv().is_ok() {
-            self.show(ctx, View::Picker);
-        }
-
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click { button, .. } = event {
-                if button == tray_icon::MouseButton::Left {
-                    self.show(ctx, View::Picker);
-                }
             }
         }
     }
@@ -208,105 +217,126 @@ impl MultiPaste {
     }
 
     fn picker_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.heading("Multi Paste");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Settings").clicked() {
-                    self.show(ctx, View::Settings);
-                }
-            });
-        });
-        ui.label(
-            RichText::new("Enter pastes · 1-9 picks directly · Esc closes")
-                .small()
-                .color(Color32::GRAY),
-        );
-        ui.separator();
-
-        if self.entries.is_empty() {
-            ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-                ui.label("Nothing copied yet. Copy something and open this window again.");
-            });
+        if header_row(
+            ui,
+            "Multi Paste",
+            &entry_count(self.entries.len()),
+            Some("Settings"),
+        ) {
+            self.show(ctx, View::Settings);
             return;
         }
+        ui.add_space(10.0);
 
-        let mut chosen = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (index, entry) in self.entries.iter().enumerate() {
-                let shortcut = if index < 9 {
-                    format!("{}.", index + 1)
-                } else {
-                    "  ".to_owned()
-                };
-                let label = format!("{shortcut} {}", preview(entry));
-                let row = ui.selectable_label(index == self.selected, label);
-                if row.clicked() {
-                    chosen = Some(index);
-                }
-                if index == self.selected {
-                    row.scroll_to_me(None);
-                }
+        if self.entries.is_empty() {
+            ui.add_space(56.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("Nothing copied yet")
+                        .size(15.0)
+                        .color(ui.visuals().text_color()),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Copy something, then open this window again.")
+                        .size(12.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        } else {
+            let mut chosen = None;
+            let mut hovered = None;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    for (index, entry) in self.entries.iter().enumerate() {
+                        let response =
+                            entry_row(ui, index, &preview(entry), index == self.selected);
+                        if response.clicked() {
+                            chosen = Some(index);
+                        }
+                        if response.hovered() {
+                            hovered = Some(index);
+                        }
+                        if index == self.selected && response.rect.height() > 0.0 {
+                            response.scroll_to_me(None);
+                        }
+                    }
+                });
+            if let Some(index) = hovered {
+                self.selected = index;
             }
-        });
-        if let Some(index) = chosen {
-            self.pick(ctx, index);
+            if let Some(index) = chosen {
+                self.pick(ctx, index);
+            }
         }
+
+        footer(ui, "↑↓ move · ⏎ paste · 1-9 quick pick · esc close");
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Settings");
-        ui.separator();
+        header_row(ui, "Settings", "", None);
+        ui.add_space(10.0);
 
-        ui.horizontal(|ui| {
-            ui.label("Entries to keep");
-            ui.add(egui::DragValue::new(&mut self.draft.history_size).range(1..=200));
-        });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Entries to keep");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.draft.history_size).range(1..=200),
+                            );
+                        });
+                    });
+                    hint(ui, "How many past copies stay in the list.");
+                });
 
-        ui.horizontal(|ui| {
-            ui.label("Global shortcut");
-            ui.text_edit_singleline(&mut self.draft.hotkey);
-        });
-        ui.label(
-            RichText::new(
-                "Modifiers: CmdOrCtrl, Ctrl, Alt, Shift, Cmd. Example: CmdOrCtrl+Shift+V",
-            )
-            .small()
-            .color(Color32::GRAY),
-        );
+                card(ui, |ui| {
+                    ui.label("Global shortcut");
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.draft.hotkey)
+                            .desired_width(f32::INFINITY)
+                            .margin(Margin::symmetric(8, 6)),
+                    );
+                    hint(ui, "Modifiers: CmdOrCtrl, Ctrl, Alt, Shift, Cmd.");
+                });
+
+                card(ui, |ui| {
+                    ui.checkbox(&mut self.draft.start_at_login, "Start when I log in");
+                    ui.add_space(2.0);
+                    ui.checkbox(&mut self.draft.paste_on_select, "Paste right after picking");
+                    hint(
+                        ui,
+                        "With this off, picking only copies and you paste yourself.",
+                    );
+                });
+            });
 
         ui.add_space(8.0);
-        ui.checkbox(&mut self.draft.start_at_login, "Start when I log in");
-        ui.checkbox(
-            &mut self.draft.paste_on_select,
-            "Paste immediately after picking (otherwise only copy)",
-        );
-
-        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Save").clicked() {
-                self.save_settings(ctx);
-            }
-            if ui.button("Cancel").clicked() {
-                self.draft = self.config.clone();
-                self.show(ctx, View::Picker);
-            }
             if ui.button("Clear history").clicked() {
                 self.clip.clear();
                 self.entries.clear();
                 self.notice = Some("History cleared.".to_owned());
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Save").clicked() {
+                    self.save_settings();
+                }
+                if ui.button("Back").clicked() {
+                    self.draft = self.config.clone();
+                    self.show(ctx, View::Picker);
+                }
+            });
         });
-
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!("Config file: {}", Config::path().display()))
-                .small()
-                .color(Color32::GRAY),
-        );
     }
 
-    fn save_settings(&mut self, ctx: &egui::Context) {
+    fn save_settings(&mut self) {
         if let Err(e) = self.register_hotkey(&self.draft.hotkey.clone()) {
             self.notice = Some(e);
             return;
@@ -325,11 +355,15 @@ impl MultiPaste {
             Ok(()) => Some("Saved.".to_owned()),
             Err(e) => Some(format!("Saved in memory, but writing the file failed: {e}")),
         };
-        let _ = ctx;
     }
 }
 
 impl eframe::App for MultiPaste {
+    /// Transparent, so the rounded panel below keeps its corners and shadow.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
@@ -347,14 +381,18 @@ impl eframe::App for MultiPaste {
             self.show(&ctx, View::Picker);
         }
 
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+        panel(ui).show(ui, |ui| {
             match self.view {
                 View::Picker => self.picker_ui(ui, &ctx),
                 View::Settings => self.settings_ui(ui, &ctx),
             }
             if let Some(notice) = &self.notice {
                 ui.add_space(6.0);
-                ui.label(RichText::new(notice).color(Color32::LIGHT_BLUE));
+                ui.label(
+                    RichText::new(notice)
+                        .size(12.0)
+                        .color(ui.visuals().hyperlink_color),
+                );
             }
         });
 
@@ -377,9 +415,168 @@ const NUMBER_KEYS: [Key; 9] = [
     Key::Num9,
 ];
 
+fn entry_count(count: usize) -> String {
+    match count {
+        1 => "1 entry".to_owned(),
+        n => format!("{n} entries"),
+    }
+}
+
+/// Rounded widgets and roomier spacing than the egui defaults.
+fn apply_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+        style.spacing.button_padding = Vec2::new(12.0, 6.0);
+        style.spacing.interact_size.y = 26.0;
+
+        let widgets = &mut style.visuals.widgets;
+        for visual in [
+            &mut widgets.noninteractive,
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+            &mut widgets.open,
+        ] {
+            visual.corner_radius = CornerRadius::same(8);
+        }
+        style.visuals.window_corner_radius = CornerRadius::same(14);
+        style.visuals.menu_corner_radius = CornerRadius::same(10);
+    });
+}
+
+/// The rounded card the whole window is drawn inside.
+fn panel(ui: &egui::Ui) -> egui::Frame {
+    let visuals = ui.visuals();
+    egui::Frame::NONE
+        .fill(visuals.window_fill)
+        .stroke(visuals.window_stroke)
+        .corner_radius(CornerRadius::same(14))
+        .shadow(Shadow {
+            offset: [0, 6],
+            blur: 20,
+            spread: 0,
+            color: Color32::from_black_alpha(70),
+        })
+        .outer_margin(Margin::same(SHADOW_MARGIN))
+        .inner_margin(Margin::symmetric(16, 14))
+}
+
+/// Title, a muted subtitle, and an optional button pinned to the right edge.
+fn header_row(ui: &mut egui::Ui, title: &str, subtitle: &str, button: Option<&str>) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).size(16.0).strong());
+        if !subtitle.is_empty() {
+            ui.label(
+                RichText::new(subtitle)
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+        if let Some(label) = button {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                clicked = ui
+                    .add(egui::Button::new(RichText::new(label).size(12.0)))
+                    .clicked();
+            });
+        }
+    });
+    clicked
+}
+
+fn footer(ui: &mut egui::Ui, hints: &str) {
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(hints)
+            .size(11.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(text)
+            .size(11.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+/// A settings section, boxed so related controls read as one group.
+fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let visuals = ui.visuals();
+    egui::Frame::NONE
+        .fill(visuals.faint_bg_color)
+        .stroke(Stroke::new(
+            1.0,
+            visuals.widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, add_contents);
+    ui.add_space(8.0);
+}
+
+/// One history row: index badge on the left, single-line preview beside it.
+fn entry_row(ui: &mut egui::Ui, index: usize, text: &str, selected: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let visuals = ui.visuals();
+    let background = if selected {
+        visuals.selection.bg_fill
+    } else if response.hovered() {
+        visuals.widgets.hovered.weak_bg_fill
+    } else {
+        Color32::TRANSPARENT
+    };
+    if background != Color32::TRANSPARENT {
+        ui.painter().rect_filled(
+            rect.shrink2(Vec2::new(0.0, 1.0)),
+            CornerRadius::same(9),
+            background,
+        );
+    }
+
+    let text_color = if selected {
+        visuals.strong_text_color()
+    } else {
+        visuals.text_color()
+    };
+    let badge_color = if selected {
+        text_color.gamma_multiply(0.75)
+    } else {
+        visuals.weak_text_color()
+    };
+
+    let painter = ui.painter().with_clip_rect(rect);
+    if index < 9 {
+        painter.text(
+            rect.left_center() + Vec2::new(12.0, 0.0),
+            Align2::LEFT_CENTER,
+            format!("{}", index + 1),
+            FontId::monospace(11.0),
+            badge_color,
+        );
+    }
+    painter.text(
+        rect.left_center() + Vec2::new(32.0, 0.0),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(13.5),
+        text_color,
+    );
+    response
+}
+
 /// One tidy line per entry: newlines and runs of spaces collapse, long text is cut.
 fn preview(text: &str) -> String {
-    const MAX: usize = 72;
+    const MAX: usize = 54;
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= MAX {
         return flat;
@@ -458,7 +655,7 @@ fn tray_icon_image() -> tray_icon::Icon {
 
 #[cfg(test)]
 mod tests {
-    use super::preview;
+    use super::{entry_count, preview};
 
     #[test]
     fn preview_collapses_whitespace_into_one_line() {
@@ -469,7 +666,7 @@ mod tests {
     fn preview_truncates_long_text() {
         let long = "x".repeat(200);
         let shown = preview(&long);
-        assert_eq!(shown.chars().count(), 72);
+        assert_eq!(shown.chars().count(), 54);
         assert!(shown.ends_with('…'));
     }
 
@@ -477,6 +674,13 @@ mod tests {
     fn preview_counts_characters_not_bytes() {
         // Multi-byte input must not panic or cut a character in half.
         let turkish = "şğüöçı".repeat(30);
-        assert_eq!(preview(&turkish).chars().count(), 72);
+        assert_eq!(preview(&turkish).chars().count(), 54);
+    }
+
+    #[test]
+    fn entry_count_is_singular_for_one() {
+        assert_eq!(entry_count(1), "1 entry");
+        assert_eq!(entry_count(0), "0 entries");
+        assert_eq!(entry_count(12), "12 entries");
     }
 }

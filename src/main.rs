@@ -16,8 +16,10 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MultiPaste")
-            .with_inner_size([460.0, 380.0])
+            .with_inner_size([488.0, 428.0])
             .with_decorations(false)
+            // Transparent so the app can paint its own rounded panel and drop shadow.
+            .with_transparent(true)
             .with_always_on_top()
             .with_resizable(false)
             .with_visible(false)
