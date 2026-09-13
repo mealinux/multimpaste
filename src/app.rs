@@ -41,6 +41,12 @@ pub struct MultiPaste {
     visible: bool,
     entries: Vec<String>,
     selected: usize,
+    /// Set once the shown window has actually held keyboard focus. Until then a
+    /// "not focused" reading means focus has not arrived yet, not that the user
+    /// clicked away -- dismissing on it would close the picker the frame it opens.
+    saw_focus: bool,
+    /// Frames spent pushing the window back down at startup, see `ui`.
+    startup_frames: u8,
     notice: Option<String>,
     hotkeys: GlobalHotKeyManager,
     hotkey: Option<HotKey>,
@@ -73,6 +79,8 @@ impl MultiPaste {
             visible: false,
             entries: Vec::new(),
             selected: 0,
+            saw_focus: false,
+            startup_frames: 0,
             notice: None,
             hotkeys,
             hotkey: None,
@@ -104,6 +112,7 @@ impl MultiPaste {
         self.view = view;
         self.notice = None;
         self.visible = true;
+        self.saw_focus = false;
         match view {
             View::Picker => {
                 self.entries = self.clip.entries();
@@ -125,12 +134,15 @@ impl MultiPaste {
         }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
+        services::focus_app();
     }
 
     fn hide(&mut self, ctx: &egui::Context) {
         self.visible = false;
+        self.saw_focus = false;
         self.notice = None;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        services::release_focus();
     }
 
     fn toggle(&mut self, ctx: &egui::Context) {
@@ -373,8 +385,19 @@ impl eframe::App for MultiPaste {
         self.drain_events(&ctx);
 
         if !self.visible {
+            // eframe shows the window as soon as it has painted a frame, overriding the
+            // `with_visible(false)` we asked for (see its `post_rendering`). Put it back
+            // down over the next few frames, and repaint at once so it barely flashes.
+            if self.startup_frames < 3 {
+                self.startup_frames += 1;
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                ctx.request_repaint();
+            }
             return;
         }
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
+        self.saw_focus |= focused;
+
         if self.view == View::Picker {
             self.picker_keys(&ctx);
         } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
@@ -396,8 +419,9 @@ impl eframe::App for MultiPaste {
             }
         });
 
-        // Clicking another window should dismiss the picker, the way a menu does.
-        if self.view == View::Picker && ctx.input(|i| i.viewport().focused == Some(false)) {
+        // Clicking another window should dismiss the picker, the way a menu does --
+        // but only once the window has had focus to lose.
+        if self.view == View::Picker && self.saw_focus && !focused {
             self.hide(&ctx);
         }
     }

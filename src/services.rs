@@ -65,6 +65,27 @@ mod platform {
         NSUpdateDynamicServices();
         receiver
     }
+
+    /// A menu bar app is an "accessory" app: showing a window does not make it the
+    /// active application, so without this the picker appears without keyboard focus.
+    pub fn focus_app() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        // Deprecated in favour of -activate, which only exists on macOS 14+ and does
+        // not take focus away from the frontmost app. This one works everywhere.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    }
+
+    /// Hand the keyboard back to whatever the user was typing in, so the paste
+    /// keystroke lands there and not on us.
+    pub fn release_focus() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        NSApplication::sharedApplication(mtm).hide(None);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -73,6 +94,11 @@ mod platform {
         // The sender is dropped immediately, so the receiver simply never fires.
         std::sync::mpsc::channel().1
     }
+
+    /// Other platforms hand focus to a window when it is shown.
+    pub fn focus_app() {}
+
+    pub fn release_focus() {}
 }
 
-pub use platform::install;
+pub use platform::{focus_app, install, release_focus};
