@@ -65,6 +65,8 @@ pub struct MultimPaste {
     /// "not focused" reading means focus has not arrived yet, not that the user
     /// clicked away -- dismissing on it would close the picker the frame it opens.
     saw_focus: bool,
+    /// When the paste keystroke is due, if one was asked for.
+    paste_at: Option<std::time::Instant>,
     /// Size and position the window was last told to take.
     placement: Option<(Vec2, egui::Pos2)>,
     notice: Option<String>,
@@ -100,6 +102,7 @@ impl MultimPaste {
             entries: Vec::new(),
             selected: 0,
             saw_focus: false,
+            paste_at: None,
             placement: None,
             notice: None,
             hotkeys,
@@ -202,11 +205,26 @@ impl MultimPaste {
         self.hide();
 
         if self.config.paste_on_select {
-            std::thread::spawn(|| {
-                std::thread::sleep(FOCUS_RETURN_DELAY);
-                send_paste();
-            });
+            self.paste_at = Some(std::time::Instant::now() + FOCUS_RETURN_DELAY);
         }
+    }
+
+    /// Send the paste keystroke once the delay is up.
+    ///
+    /// It has to go out from here rather than from a timer thread: enigo's macOS
+    /// backend reads the keyboard layout through Text Input Services, and those trap
+    /// the whole process when they are called off the main thread.
+    fn pending_paste(&mut self, ctx: &egui::Context) {
+        let Some(due) = self.paste_at else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if now < due {
+            ctx.request_repaint_after(due - now);
+            return;
+        }
+        self.paste_at = None;
+        send_paste();
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -413,6 +431,7 @@ impl eframe::App for MultimPaste {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(HEARTBEAT);
+        self.pending_paste(&ctx);
         self.place(&ctx);
         self.drain_events(&ctx);
 
