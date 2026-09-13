@@ -42,11 +42,10 @@ A tray icon needs a StatusNotifier host — GNOME users want the *AppIndicator* 
 
 ## Using it
 
-Three ways to open the picker, all showing the same list:
+Two ways to open the picker, both showing the same list:
 
 | | |
 |---|---|
-| **Right-click → Services → Multim Paste** | In any editable text field. macOS only, see the note below. |
 | **<kbd>Cmd/Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>** | Anywhere. Change it in Settings. |
 | **Menu bar / tray icon** | Click it, or use its menu. |
 
@@ -76,28 +75,36 @@ Settings live in a small JSON file (the path is shown at the bottom of the Setti
 
 ---
 
-## About the right-click entry
+## Why there is no right-click entry
 
-On macOS, MultimPaste registers a system **Service**. A Service is the only supported way
-for one app to put an item into another app's menus, and it lands in the **Services**
-submenu — so the entry reads *right-click → Services → Multim Paste*.
+Short version: no application can put an item in another application's right-click
+menu on macOS, Windows or Linux. Use the global shortcut — it works in every app and
+every text field.
 
-**That submenu is not everywhere.** Each application decides whether its context menu
-carries a Services submenu at all. Rich text views generally do — TextEdit, Notes, Mail,
-Xcode, most editors. Plenty of places do not, including Finder's rename field, and there
-the right-click menu stops at Cut/Copy/Paste. Nothing can be installed to change that.
+The longer version, because it is worth knowing what was actually tried.
 
-So treat the right-click entry as a convenience where it exists, and the global shortcut as
-the way in that works everywhere — including every app and field that has no Services menu.
+The menu you get when you right-click in a text field is built by the application you
+are in, not by the operating system, and none of the three desktops offers a supported
+way to add to it. On macOS the whole menu comes from AppKit, and its contents are
+fixed:
 
-If the entry is missing somewhere you expect it, open System Settings → Keyboard →
-Keyboard Shortcuts → Services and check that **Multim Paste** is ticked. You can give it
-its own key combination there too.
+```
+Look Up · Translate · Search With Google
+Cut · Copy · Paste · Paste and Match Style
+Share…
+Font ▸ Spelling and Grammar ▸ Substitutions ▸ Transformations ▸ Speech ▸ Layout Orientation ▸
+```
 
-On **Windows and Linux there is no right-click entry**, and this is not a missing feature:
-every application draws that menu itself, and neither OS offers a supported hook into it.
-The only ways in would be injecting code into other processes — which breaks constantly and
-looks exactly like malware to an antivirus. The global shortcut does the same job everywhere.
+There is no extension point in that list, and — as of macOS 15 — not even a *Services*
+submenu to hang one off. A **Service** is still the only way one app can reach another
+app's menus at all, so MultimPaste registers one, and you will find **Multim Paste**
+wherever an app does offer a Services menu: the menu bar, under the application's own
+menu. It is worth opening System Settings → Keyboard → Keyboard Shortcuts → Services
+once, where you can give it a key combination of its own.
+
+On **Windows and Linux** the same is true for the same reason. The only ways in would be
+injecting code into other processes — which breaks constantly and looks exactly like
+malware to an antivirus.
 
 ## Accessibility permission on macOS
 
