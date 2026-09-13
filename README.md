@@ -65,7 +65,7 @@ Open Settings from the tray menu or the button in the picker.
 |---|---|---|
 | Entries to keep | `10` | Anything from 1 to 200. |
 | Global shortcut | `CmdOrCtrl+Shift+V` | Modifiers: `CmdOrCtrl`, `Ctrl`, `Alt`, `Shift`, `Cmd`. |
-| Start when I log in | off | Registers MultimPaste as a login item. |
+| Start when I log in | off | On macOS this is a LaunchAgent, so it shows under System Settings → General → Login Items → *Allow in the Background*, not in the login items list above it. |
 | Paste immediately after picking | on | Turn it off to only copy, and paste yourself. |
 
 Settings live in a small JSON file (the path is shown at the bottom of the Settings pane):

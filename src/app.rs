@@ -55,8 +55,8 @@ struct TrayMenu {
 pub struct MultimPaste {
     clip: Clip,
     config: Config,
-    /// Edited copy shown in the settings pane; only copied back on Save.
-    draft: Config,
+    /// Text of the shortcut field, applied once the user finishes typing.
+    hotkey_input: String,
     view: View,
     visible: bool,
     entries: Vec<String>,
@@ -99,7 +99,7 @@ impl MultimPaste {
 
         let mut app = Self {
             clip,
-            draft: config.clone(),
+            hotkey_input: config.hotkey.clone(),
             config,
             view: View::Picker,
             visible: false,
@@ -147,7 +147,7 @@ impl MultimPaste {
                 self.entries = self.clip.entries();
                 self.selected = 0;
             }
-            View::Settings => self.draft = self.config.clone(),
+            View::Settings => self.hotkey_input = self.config.hotkey.clone(),
         }
         services::focus_app();
     }
@@ -362,32 +362,50 @@ impl MultimPaste {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 card(ui, |ui| {
+                    let mut size = self.config.history_size;
                     ui.horizontal(|ui| {
                         ui.label("Entries to keep");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut self.draft.history_size).range(1..=200),
-                            );
+                            ui.add(egui::DragValue::new(&mut size).range(1..=200));
                         });
                     });
+                    if size != self.config.history_size {
+                        self.config.history_size = size;
+                        self.clip.set_limit(size);
+                        self.remember();
+                    }
                     hint(ui, "How many past copies stay in the list.");
                 });
 
                 card(ui, |ui| {
                     ui.label("Global shortcut");
                     ui.add_space(4.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.draft.hotkey)
+                    let editor = ui.add(
+                        egui::TextEdit::singleline(&mut self.hotkey_input)
                             .desired_width(f32::INFINITY)
                             .margin(Margin::symmetric(8, 6)),
                     );
+                    // Applied when the user is done typing, not on every keystroke.
+                    if editor.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                        self.apply_hotkey();
+                    }
                     hint(ui, "Modifiers: CmdOrCtrl, Ctrl, Alt, Shift, Cmd.");
                 });
 
                 card(ui, |ui| {
-                    ui.checkbox(&mut self.draft.start_at_login, "Start when I log in");
+                    let mut at_login = self.config.start_at_login;
+                    if ui.checkbox(&mut at_login, "Start when I log in").changed() {
+                        self.apply_start_at_login(at_login);
+                    }
                     ui.add_space(2.0);
-                    ui.checkbox(&mut self.draft.paste_on_select, "Paste right after picking");
+                    let mut paste = self.config.paste_on_select;
+                    if ui
+                        .checkbox(&mut paste, "Paste right after picking")
+                        .changed()
+                    {
+                        self.config.paste_on_select = paste;
+                        self.remember();
+                    }
                     hint(
                         ui,
                         "With this off, picking only copies and you paste yourself.",
@@ -405,36 +423,46 @@ impl MultimPaste {
                 self.notice = Some("History cleared.".to_owned());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Save").clicked() {
-                    self.save_settings();
-                }
-                if ui.button("Back").clicked() {
-                    self.draft = self.config.clone();
+                if ui.button("Done").clicked() {
                     self.show(View::Picker);
                 }
             });
         });
     }
 
-    fn save_settings(&mut self) {
-        if let Err(e) = self.register_hotkey(&self.draft.hotkey.clone()) {
-            self.notice = Some(e);
+    /// Settings take effect as they are changed, so every change is written out too.
+    fn remember(&mut self) {
+        if let Err(e) = self.config.save() {
+            self.notice = Some(format!("Could not write the settings file: {e}"));
+        }
+    }
+
+    fn apply_hotkey(&mut self) {
+        if self.hotkey_input == self.config.hotkey {
             return;
         }
-        if self.draft.start_at_login != self.config.start_at_login {
-            if let Err(e) = config::apply_start_at_login(self.draft.start_at_login) {
-                self.notice = Some(format!("Could not change the login item: {e}"));
-                self.draft.start_at_login = self.config.start_at_login;
-                return;
+        match self.register_hotkey(&self.hotkey_input.clone()) {
+            Ok(()) => {
+                self.config.hotkey = self.hotkey_input.clone();
+                self.notice = Some(format!("Shortcut is now {}.", self.config.hotkey));
+                self.remember();
+            }
+            Err(e) => {
+                self.hotkey_input = self.config.hotkey.clone();
+                self.notice = Some(e);
             }
         }
+    }
 
-        self.clip.set_limit(self.draft.history_size);
-        self.config = self.draft.clone();
-        self.notice = match self.config.save() {
-            Ok(()) => Some("Saved.".to_owned()),
-            Err(e) => Some(format!("Saved in memory, but writing the file failed: {e}")),
-        };
+    fn apply_start_at_login(&mut self, enabled: bool) {
+        match config::apply_start_at_login(enabled) {
+            Ok(()) => {
+                self.config.start_at_login = enabled;
+                self.remember();
+            }
+            // Left unchecked, because the login item was not actually created.
+            Err(e) => self.notice = Some(format!("Could not change the login item: {e}")),
+        }
     }
 }
 
