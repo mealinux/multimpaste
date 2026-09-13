@@ -78,18 +78,43 @@ Settings live in a small JSON file (the path is shown at the bottom of the Setti
 
 ## About the right-click entry
 
-On macOS, MultimPaste registers a system **Service**, so it shows up when you right-click
-in a text field — inside the **Services** submenu, a little below *Paste*. That submenu is
-the only supported way for one app to add an item to every other app's context menu.
-If it does not appear, open System Settings → Keyboard → Keyboard Shortcuts → Services
-and tick **Multim Paste** under *Text*. You can give it its own shortcut there too.
+On macOS, MultimPaste registers a system **Service**. A Service is the only supported way
+for one app to put an item into another app's menus, and it lands in the **Services**
+submenu — so the entry reads *right-click → Services → Multim Paste*.
+
+**That submenu is not everywhere.** Each application decides whether its context menu
+carries a Services submenu at all. Rich text views generally do — TextEdit, Notes, Mail,
+Xcode, most editors. Plenty of places do not, including Finder's rename field, and there
+the right-click menu stops at Cut/Copy/Paste. Nothing can be installed to change that.
+
+So treat the right-click entry as a convenience where it exists, and the global shortcut as
+the way in that works everywhere — including every app and field that has no Services menu.
+
+If the entry is missing somewhere you expect it, open System Settings → Keyboard →
+Keyboard Shortcuts → Services and check that **Multim Paste** is ticked. You can give it
+its own key combination there too.
 
 On **Windows and Linux there is no right-click entry**, and this is not a missing feature:
 every application draws that menu itself, and neither OS offers a supported hook into it.
 The only ways in would be injecting code into other processes — which breaks constantly and
 looks exactly like malware to an antivirus. The global shortcut does the same job everywhere.
 
----
+## Accessibility permission on macOS
+
+Pressing <kbd>Cmd</kbd>+<kbd>V</kbd> for you counts as controlling your computer, so macOS
+asks for **Accessibility** permission the first time MultimPaste pastes. Without it nothing
+breaks: your pick still goes to the clipboard and the picker says so — you just press
+<kbd>Cmd</kbd>+<kbd>V</kbd> yourself.
+
+Because these builds are ad-hoc signed rather than signed with a Developer ID, macOS sees
+every new build as a different app, and the permission has to be granted again after an
+update. To clear a stale entry:
+
+```sh
+tccutil reset Accessibility com.multimpaste.app
+```
+
+Then open MultimPaste, paste once, and allow it when asked.
 
 ## Build from source
 

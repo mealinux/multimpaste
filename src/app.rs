@@ -67,6 +67,10 @@ pub struct MultimPaste {
     saw_focus: bool,
     /// When the paste keystroke is due, if one was asked for.
     paste_at: Option<std::time::Instant>,
+    /// Built on the first paste and kept: building it is what opens the macOS
+    /// Accessibility prompt, and enigo opens that prompt on every attempt.
+    enigo: Option<enigo::Enigo>,
+    asked_for_accessibility: bool,
     /// Size and position the window was last told to take.
     placement: Option<(Vec2, egui::Pos2)>,
     notice: Option<String>,
@@ -103,6 +107,8 @@ impl MultimPaste {
             selected: 0,
             saw_focus: false,
             paste_at: None,
+            enigo: None,
+            asked_for_accessibility: false,
             placement: None,
             notice: None,
             hotkeys,
@@ -224,7 +230,7 @@ impl MultimPaste {
             return;
         }
         self.paste_at = None;
-        send_paste();
+        self.send_paste();
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -336,6 +342,16 @@ impl MultimPaste {
         }
 
         footer(ui, "↑↓ move · ⏎ paste · 1-9 quick pick · esc close");
+        if self.config.paste_on_select && !services::can_paste() {
+            ui.label(
+                RichText::new(
+                    "Allow MultimPaste under Accessibility to have it paste for you. \
+                     Until then picking only copies.",
+                )
+                .size(11.0)
+                .color(ui.visuals().warn_fg_color),
+            );
+        }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -684,22 +700,41 @@ fn preview(text: &str) -> String {
     flat.chars().take(MAX - 1).collect::<String>() + "…"
 }
 
-fn send_paste() {
-    use enigo::{Direction, Enigo, Key as EKey, Keyboard, Settings};
+impl MultimPaste {
+    fn send_paste(&mut self) {
+        use enigo::{Direction, Enigo, Key as EKey, Keyboard, Settings};
 
-    // ponytail: on macOS this needs Accessibility permission; without it the keystroke
-    // is silently dropped and the entry is still on the clipboard for a manual paste.
-    let Ok(mut enigo) = Enigo::new(&Settings::default()) else {
-        return;
-    };
-    let modifier = if cfg!(target_os = "macos") {
-        EKey::Meta
-    } else {
-        EKey::Control
-    };
-    let _ = enigo.key(modifier, Direction::Press);
-    let _ = enigo.key(EKey::Unicode('v'), Direction::Click);
-    let _ = enigo.key(modifier, Direction::Release);
+        if self.enigo.is_none() {
+            let settings = Settings {
+                // enigo opens the Accessibility prompt every time it is built without
+                // permission, so let it ask once and stay quiet after that.
+                open_prompt_to_get_permissions: !self.asked_for_accessibility,
+                ..Default::default()
+            };
+            self.asked_for_accessibility = true;
+            match Enigo::new(&settings) {
+                Ok(enigo) => self.enigo = Some(enigo),
+                Err(e) => {
+                    // The entry is on the clipboard either way, so the user can paste
+                    // it by hand; the picker says so in its footer.
+                    eprintln!("multimpaste: cannot send the paste keystroke: {e}");
+                    return;
+                }
+            }
+        }
+
+        let Some(enigo) = self.enigo.as_mut() else {
+            return;
+        };
+        let modifier = if cfg!(target_os = "macos") {
+            EKey::Meta
+        } else {
+            EKey::Control
+        };
+        let _ = enigo.key(modifier, Direction::Press);
+        let _ = enigo.key(EKey::Unicode('v'), Direction::Click);
+        let _ = enigo.key(modifier, Direction::Release);
+    }
 }
 
 fn build_tray() -> Result<(TrayIcon, TrayMenu), Box<dyn std::error::Error>> {

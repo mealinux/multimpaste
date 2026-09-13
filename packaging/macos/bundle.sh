@@ -14,7 +14,10 @@ cp "$root/packaging/macos/Info.plist" "$app/Contents/Info.plist"
 cp "$root/target/release/multimpaste" "$app/Contents/MacOS/multimpaste"
 
 # Ad-hoc signature: without any signature macOS refuses to load the Service.
-codesign --force --deep --sign - "$app"
+# Pinning the identifier keeps it stable across rebuilds. The signature itself still
+# changes with every build, so macOS treats each build as a new app and the
+# Accessibility permission has to be granted again after an update.
+codesign --force --deep --sign - --identifier com.multimpaste.app "$app"
 
 echo "Built $app"
 echo "Install it with:  cp -R \"$app\" /Applications/"

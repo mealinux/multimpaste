@@ -36,8 +36,12 @@
 			<string>multimPaste</string>
 			<key>NSPortName</key>
 			<string>MultimPaste</string>
+			<!-- No send types means the entry shows wherever text can be inserted;
+			     the string type adds the contexts where text is selected. -->
 			<key>NSSendTypes</key>
-			<array/>
+			<array>
+				<string>NSStringPboardType</string>
+			</array>
 			<key>NSReturnTypes</key>
 			<array>
 				<string>NSStringPboardType</string>

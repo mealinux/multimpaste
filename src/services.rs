@@ -77,6 +77,16 @@ mod platform {
         std::mem::forget(token);
     }
 
+    // In ApplicationServices, linked in through AppKit.
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    /// Whether the app may post keystrokes, asked without opening the system prompt.
+    pub fn can_paste() -> bool {
+        unsafe { AXIsProcessTrusted() }
+    }
+
     /// A menu bar app is an "accessory" app: showing a window does not make it the
     /// active application, so without this the picker appears without keyboard focus.
     ///
@@ -112,7 +122,12 @@ mod platform {
     /// Other platforms hand focus to a window when it is shown.
     pub fn focus_app() {}
 
+    /// Only macOS gates synthetic keystrokes behind a permission.
+    pub fn can_paste() -> bool {
+        true
+    }
+
     pub fn release_focus() {}
 }
 
-pub use platform::{focus_app, install, release_focus};
+pub use platform::{can_paste, focus_app, install, release_focus};
