@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MultiPaste
+Comment=Clipboard history picker
+Exec=multipaste
+Terminal=false
+Categories=Utility;
+StartupNotify=false
