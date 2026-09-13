@@ -10,7 +10,7 @@ pub struct Config {
     pub history_size: usize,
     /// Global shortcut, e.g. "CmdOrCtrl+Shift+V".
     pub hotkey: String,
-    /// Launch MultiPaste when the user logs in.
+    /// Launch MultimPaste when the user logs in.
     pub start_at_login: bool,
     /// Send Ctrl/Cmd+V after picking an entry instead of only copying it.
     pub paste_on_select: bool,
@@ -31,7 +31,7 @@ impl Config {
     pub fn path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("multipaste")
+            .join("multimpaste")
             .join("config.json")
     }
 
@@ -54,10 +54,10 @@ impl Config {
 /// Register or unregister the login item. Errors are surfaced to the settings pane.
 pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    // ponytail: on macOS this registers the raw binary unless MultiPaste.app is installed;
+    // ponytail: on macOS this registers the raw binary unless MultimPaste.app is installed;
     // bundling the .app (see packaging/) makes the login item show a proper name and icon.
     let launcher = auto_launch::AutoLaunchBuilder::new()
-        .set_app_name("MultiPaste")
+        .set_app_name("MultimPaste")
         .set_app_path(&exe.to_string_lossy())
         .build()
         .map_err(|e| e.to_string())?;

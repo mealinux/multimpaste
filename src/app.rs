@@ -7,6 +7,7 @@ use eframe::egui::{
 };
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use std::sync::mpsc::{self, Receiver};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
@@ -19,6 +20,25 @@ const SETTINGS_SIZE: Vec2 = Vec2::new(460.0, 470.0);
 /// Room around the rounded panel for its drop shadow.
 const SHADOW_MARGIN: i8 = 14;
 const ROW_HEIGHT: f32 = 36.0;
+/// Where the window waits between uses: a single transparent pixel in the corner.
+const PARKED: egui::Pos2 = egui::Pos2::new(0.0, 0.0);
+const PARKED_SIZE: Vec2 = Vec2::new(1.0, 1.0);
+/// Used only if the monitor size is unknown, so the window never opens off screen.
+const FALLBACK_POSITION: egui::Pos2 = egui::Pos2::new(120.0, 120.0);
+/// A safety net only. The tray, the shortcut and the Service wake the window through
+/// their own callbacks, and egui repaints on its own for every mouse and key event.
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Something happened outside the egui event loop and the app should look at it.
+///
+/// The tray, the shortcut and the macOS Service all fire on system threads. They
+/// post a signal here and wake the window, rather than the app polling for them:
+/// while the window is hidden, eframe's timed repaints stop arriving.
+enum Signal {
+    ToggleWindow,
+    OpenPicker,
+    Menu(MenuId),
+}
 
 #[derive(PartialEq, Clone, Copy)]
 enum View {
@@ -32,7 +52,7 @@ struct TrayMenu {
     quit: MenuId,
 }
 
-pub struct MultiPaste {
+pub struct MultimPaste {
     clip: Clip,
     config: Config,
     /// Edited copy shown in the settings pane; only copied back on Save.
@@ -45,28 +65,28 @@ pub struct MultiPaste {
     /// "not focused" reading means focus has not arrived yet, not that the user
     /// clicked away -- dismissing on it would close the picker the frame it opens.
     saw_focus: bool,
-    /// Frames spent pushing the window back down at startup, see `ui`.
-    startup_frames: u8,
+    /// Size and position the window was last told to take.
+    placement: Option<(Vec2, egui::Pos2)>,
     notice: Option<String>,
     hotkeys: GlobalHotKeyManager,
     hotkey: Option<HotKey>,
     // Both must stay alive for the whole run or the tray entry disappears.
     _tray: Option<TrayIcon>,
     menu: Option<TrayMenu>,
-    /// Fires when the user chooses MultiPaste from an app's context menu (macOS).
-    context_menu: services::Trigger,
+    signals: Receiver<Signal>,
 }
 
-impl MultiPaste {
+impl MultimPaste {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
         apply_style(&cc.egui_ctx);
 
         let clip = Clip::start(config.history_size);
         let hotkeys = GlobalHotKeyManager::new().expect("global hotkey manager");
+        let signals = listen(&cc.egui_ctx);
         let (tray, menu) = match build_tray() {
             Ok((tray, menu)) => (Some(tray), Some(menu)),
             Err(e) => {
-                eprintln!("multipaste: tray unavailable: {e}");
+                eprintln!("multimpaste: tray unavailable: {e}");
                 (None, None)
             }
         };
@@ -80,13 +100,13 @@ impl MultiPaste {
             entries: Vec::new(),
             selected: 0,
             saw_focus: false,
-            startup_frames: 0,
+            placement: None,
             notice: None,
             hotkeys,
             hotkey: None,
             _tray: tray,
             menu,
-            context_menu: services::install(),
+            signals,
         };
         if let Err(e) = app.register_hotkey(&app.config.hotkey.clone()) {
             app.notice = Some(e);
@@ -108,7 +128,7 @@ impl MultiPaste {
         Ok(())
     }
 
-    fn show(&mut self, ctx: &egui::Context, view: View) {
+    fn show(&mut self, view: View) {
         self.view = view;
         self.notice = None;
         self.visible = true;
@@ -120,46 +140,66 @@ impl MultiPaste {
             }
             View::Settings => self.draft = self.config.clone(),
         }
-
-        let size = match view {
-            View::Picker => PICKER_SIZE,
-            View::Settings => SETTINGS_SIZE,
-        };
-        let outer = size + Vec2::splat(f32::from(SHADOW_MARGIN) * 2.0);
-        ctx.send_viewport_cmd(ViewportCommand::InnerSize(outer));
-        if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(
-                ((monitor - outer) * 0.5).to_pos2(),
-            ));
-        }
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(ViewportCommand::Focus);
         services::focus_app();
     }
 
-    fn hide(&mut self, ctx: &egui::Context) {
+    /// Put the window where the current state wants it, and only when that changes.
+    ///
+    /// Parked as a 1x1 transparent window in the corner rather than hidden: eframe
+    /// never paints a window again once it has been shown and then hidden, which
+    /// would leave the tray, the shortcut and the Service dead after the first use.
+    /// Parking off screen instead loses the monitor size, and with it the ability to
+    /// centre the window when it opens.
+    fn place(&mut self, ctx: &egui::Context) {
+        let monitor = ctx.input(|i| i.viewport().monitor_size);
+        let (size, position) = if self.visible {
+            let content = match self.view {
+                View::Picker => PICKER_SIZE,
+                View::Settings => SETTINGS_SIZE,
+            };
+            let outer = content + Vec2::splat(f32::from(SHADOW_MARGIN) * 2.0);
+            let centred = monitor.map_or(FALLBACK_POSITION, |monitor| {
+                ((monitor - outer) * 0.5).to_pos2()
+            });
+            (outer, centred)
+        } else {
+            (PARKED_SIZE, PARKED)
+        };
+
+        if self.placement == Some((size, position)) {
+            return;
+        }
+        self.placement = Some((size, position));
+        ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(!self.visible));
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(position));
+        if self.visible {
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
+        }
+    }
+
+    fn hide(&mut self) {
         self.visible = false;
         self.saw_focus = false;
         self.notice = None;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         services::release_focus();
     }
 
-    fn toggle(&mut self, ctx: &egui::Context) {
+    fn toggle(&mut self) {
         if self.visible {
-            self.hide(ctx);
+            self.hide();
         } else {
-            self.show(ctx, View::Picker);
+            self.show(View::Picker);
         }
     }
 
     /// Put the entry back on the clipboard, close the picker, then paste it.
-    fn pick(&mut self, ctx: &egui::Context, index: usize) {
+    fn pick(&mut self, index: usize) {
         let Some(text) = self.entries.get(index).cloned() else {
             return;
         };
         self.clip.copy(text);
-        self.hide(ctx);
+        self.hide();
 
         if self.config.paste_on_select {
             std::thread::spawn(|| {
@@ -170,32 +210,26 @@ impl MultiPaste {
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state == HotKeyState::Pressed {
-                self.toggle(ctx);
-            }
-        }
-
-        while self.context_menu.try_recv().is_ok() {
-            self.show(ctx, View::Picker);
-        }
-
-        // Only the tray *menu* is handled. Raw tray clicks are deliberately ignored:
-        // a left click already opens the menu, and on macOS that click is delivered
-        // after the menu selection, which would undo whatever the user just chose.
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            let Some(menu) = &self.menu else { continue };
-            if event.id == menu.quit {
-                ctx.send_viewport_cmd(ViewportCommand::Close);
-            } else if event.id == menu.settings {
-                self.show(ctx, View::Settings);
-            } else if event.id == menu.open {
-                self.show(ctx, View::Picker);
+        while let Ok(signal) = self.signals.try_recv() {
+            match signal {
+                Signal::ToggleWindow => self.toggle(),
+                Signal::OpenPicker => self.show(View::Picker),
+                Signal::Menu(id) => {
+                    let Some(menu) = &self.menu else { continue };
+                    if id == menu.quit {
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    } else if id == menu.settings {
+                        self.show(View::Settings);
+                    } else if id == menu.open {
+                        self.show(View::Picker);
+                    }
+                }
             }
         }
     }
 
     fn picker_keys(&mut self, ctx: &egui::Context) {
+        // ctx here is the picker window's own context.
         let (mut close, mut confirm, mut delta, mut direct) = (false, false, 0i32, None);
         ctx.input_mut(|i| {
             close = i.consume_key(Modifiers::NONE, Key::Escape);
@@ -214,11 +248,11 @@ impl MultiPaste {
         });
 
         if close {
-            self.hide(ctx);
+            self.hide();
         } else if let Some(index) = direct {
-            self.pick(ctx, index);
+            self.pick(index);
         } else if confirm {
-            self.pick(ctx, self.selected);
+            self.pick(self.selected);
         } else if delta != 0 && !self.entries.is_empty() {
             let last = self.entries.len() - 1;
             self.selected = match delta {
@@ -228,14 +262,14 @@ impl MultiPaste {
         }
     }
 
-    fn picker_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn picker_ui(&mut self, ui: &mut egui::Ui) {
         if header_row(
             ui,
-            "Multi Paste",
+            "Multim Paste",
             &entry_count(self.entries.len()),
             Some("Settings"),
         ) {
-            self.show(ctx, View::Settings);
+            self.show(View::Settings);
             return;
         }
         ui.add_space(10.0);
@@ -279,14 +313,14 @@ impl MultiPaste {
                 self.selected = index;
             }
             if let Some(index) = chosen {
-                self.pick(ctx, index);
+                self.pick(index);
             }
         }
 
         footer(ui, "↑↓ move · ⏎ paste · 1-9 quick pick · esc close");
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
         header_row(ui, "Settings", "", None);
         ui.add_space(10.0);
 
@@ -342,7 +376,7 @@ impl MultiPaste {
                 }
                 if ui.button("Back").clicked() {
                     self.draft = self.config.clone();
-                    self.show(ctx, View::Picker);
+                    self.show(View::Picker);
                 }
             });
         });
@@ -370,44 +404,35 @@ impl MultiPaste {
     }
 }
 
-impl eframe::App for MultiPaste {
-    /// Transparent, so the rounded panel below keeps its corners and shadow.
+impl eframe::App for MultimPaste {
+    /// Transparent, so the panel keeps its rounded corners and shadow.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-
-        // ponytail: tray and hotkey crates deliver events on channels, so the app polls
-        // them on a timer instead of wiring a custom winit event loop.
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(HEARTBEAT);
+        self.place(&ctx);
         self.drain_events(&ctx);
 
         if !self.visible {
-            // eframe shows the window as soon as it has painted a frame, overriding the
-            // `with_visible(false)` we asked for (see its `post_rendering`). Put it back
-            // down over the next few frames, and repaint at once so it barely flashes.
-            if self.startup_frames < 3 {
-                self.startup_frames += 1;
-                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-                ctx.request_repaint();
-            }
             return;
         }
+
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
         self.saw_focus |= focused;
 
         if self.view == View::Picker {
             self.picker_keys(&ctx);
         } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.show(&ctx, View::Picker);
+            self.show(View::Picker);
         }
 
         panel(ui).show(ui, |ui| {
             match self.view {
-                View::Picker => self.picker_ui(ui, &ctx),
-                View::Settings => self.settings_ui(ui, &ctx),
+                View::Picker => self.picker_ui(ui),
+                View::Settings => self.settings_ui(ui),
             }
             if let Some(notice) = &self.notice {
                 ui.add_space(6.0);
@@ -422,7 +447,7 @@ impl eframe::App for MultiPaste {
         // Clicking another window should dismiss the picker, the way a menu does --
         // but only once the window has had focus to lose.
         if self.view == View::Picker && self.saw_focus && !focused {
-            self.hide(&ctx);
+            self.hide();
         }
     }
 }
@@ -438,6 +463,38 @@ const NUMBER_KEYS: [Key; 9] = [
     Key::Num8,
     Key::Num9,
 ];
+
+/// Route every system event source into one channel, waking the window each time.
+///
+/// Only the tray *menu* is listened to. Raw tray clicks are deliberately ignored: a
+/// left click already opens the menu, and on macOS that click arrives after the menu
+/// selection, which would undo whatever the user just chose.
+fn listen(ctx: &egui::Context) -> Receiver<Signal> {
+    let (sender, receiver) = mpsc::channel();
+
+    let (hotkey_sender, hotkey_ctx) = (sender.clone(), ctx.clone());
+    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+        if event.state == HotKeyState::Pressed && hotkey_sender.send(Signal::ToggleWindow).is_ok() {
+            hotkey_ctx.request_repaint();
+        }
+    }));
+
+    let (menu_sender, menu_ctx) = (sender.clone(), ctx.clone());
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        if menu_sender.send(Signal::Menu(event.id)).is_ok() {
+            menu_ctx.request_repaint();
+        }
+    }));
+
+    let service_ctx = ctx.clone();
+    services::install(move || {
+        if sender.send(Signal::OpenPicker).is_ok() {
+            service_ctx.request_repaint();
+        }
+    });
+
+    receiver
+}
 
 fn entry_count(count: usize) -> String {
     match count {
@@ -627,9 +684,9 @@ fn send_paste() {
 }
 
 fn build_tray() -> Result<(TrayIcon, TrayMenu), Box<dyn std::error::Error>> {
-    let open = MenuItem::new("Multi Paste", true, None);
+    let open = MenuItem::new("Multim Paste", true, None);
     let settings = MenuItem::new("Settings…", true, None);
-    let quit = MenuItem::new("Quit MultiPaste", true, None);
+    let quit = MenuItem::new("Quit MultimPaste", true, None);
     let ids = TrayMenu {
         open: open.id().clone(),
         settings: settings.id().clone(),
@@ -644,7 +701,7 @@ fn build_tray() -> Result<(TrayIcon, TrayMenu), Box<dyn std::error::Error>> {
     menu.append(&quit)?;
 
     let tray = TrayIconBuilder::new()
-        .with_tooltip("MultiPaste")
+        .with_tooltip("MultimPaste")
         .with_menu(Box::new(menu))
         .with_icon(tray_icon_image())
         .with_icon_as_template(true)

@@ -26,7 +26,7 @@ impl Clip {
             let mut clipboard = match arboard::Clipboard::new() {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("multipaste: clipboard unavailable: {e}");
+                    eprintln!("multimpaste: clipboard unavailable: {e}");
                     return;
                 }
             };

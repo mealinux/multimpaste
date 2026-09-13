@@ -1,5 +1,5 @@
 [package]
-name = "multipaste"
+name = "multimpaste"
 version = "0.1.0"
 edition = "2024"
 
@@ -17,4 +17,4 @@ tray-icon = "0.25.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSPasteboard", "NSGraphics"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSObject"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSObject", "NSProcessInfo"] }

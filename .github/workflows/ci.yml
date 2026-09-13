@@ -37,25 +37,25 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           ./packaging/macos/bundle.sh
-          ditto -c -k --keepParent target/MultiPaste.app MultiPaste-macos.zip
+          ditto -c -k --keepParent target/MultimPaste.app MultimPaste-macos.zip
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          install -D target/release/multipaste dist/multipaste
-          install -D packaging/linux/multipaste.desktop dist/multipaste.desktop
-          tar -czf MultiPaste-linux.tar.gz -C dist .
+          install -D target/release/multimpaste dist/multimpaste
+          install -D packaging/linux/multimpaste.desktop dist/multimpaste.desktop
+          tar -czf MultimPaste-linux.tar.gz -C dist .
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path target/release/multipaste.exe -DestinationPath MultiPaste-windows.zip
+        run: Compress-Archive -Path target/release/multimpaste.exe -DestinationPath MultimPaste-windows.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MultiPaste-${{ runner.os }}
+          name: MultimPaste-${{ runner.os }}
           path: |
-            MultiPaste-*.zip
-            MultiPaste-*.tar.gz
+            MultimPaste-*.zip
+            MultimPaste-*.tar.gz
           if-no-files-found: ignore
 
       - name: Attach to release
@@ -63,5 +63,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            MultiPaste-*.zip
-            MultiPaste-*.tar.gz
+            MultimPaste-*.zip
+            MultimPaste-*.tar.gz
