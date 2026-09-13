@@ -96,7 +96,7 @@ looks exactly like malware to an antivirus. The global shortcut does the same jo
 Needs a [Rust toolchain](https://rustup.rs). On Debian/Ubuntu also:
 
 ```sh
-sudo apt install libgtk-3-dev libayatana-appindicator3-dev libxkbcommon-dev \
+sudo apt install libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libxkbcommon-dev \
                  libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 ```
 
